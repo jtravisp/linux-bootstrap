@@ -76,7 +76,9 @@ machines, set these up once in your 1Password vault:
 
 ## Manual steps after running
 
-- Sign in to 1Password (master password + secret key), then in
+- Sign in to 1Password — use **"Sign in with QR code"** if it's offered on
+  the welcome screen: scan it with the 1Password mobile app (already signed
+  in) instead of typing the master password + secret key by hand. Then in
   Settings > Developer turn on **"Integrate with 1Password CLI"** and
   **"Use the SSH Agent"**. Everything else below depends on this.
 - Run `op plugin init gh` once to authenticate `gh` via 1Password instead
