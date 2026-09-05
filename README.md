@@ -1,11 +1,14 @@
 # linux-bootstrap
 
-Turns a fresh Ubuntu/Debian install into my working machine: the software I
+Turns a fresh Ubuntu install into my working machine: the software I
 use, my shell and terminal config, and enough of my AWS/SSH/GitHub setup that
 the only things left are the logins nobody can automate.
 
 Everything here is personal — the package list, the dotfiles, and the
 1Password vault item names are mine. Fork it and change them if you're not me.
+
+Ubuntu and its derivatives (Mint, Pop!_OS, Zorin) only. Not plain Debian: the
+Docker repo it uses is the Ubuntu one, and snapd isn't there by default.
 
 ## Run it
 
@@ -27,6 +30,10 @@ curl -fsSL https://raw.githubusercontent.com/jtravisp/linux-bootstrap/main/insta
 That installs all the software, but skips the dotfiles and `~/.aws/config` —
 there's no checkout to link them from. It warns and carries on rather than
 failing.
+
+It finishes with a summary of what's actually on the machine — every package,
+symlink, group membership and 1Password check, marked `ok` or `MISS` — so a
+long run's output scrolling past doesn't hide a step that didn't land.
 
 Re-running is safe, and is the intended fix for a half-finished first run. It
 skips anything already installed, adds you to the `docker` group if that
@@ -129,7 +136,8 @@ zsh/.p10k.zsh         ~/.p10k.zsh
 ## Known gaps
 
 - Never run start to finish on a clean machine — it's been validated
-  piece-by-piece on an already-provisioned one.
+  piece-by-piece on an already-provisioned one. The end-of-run summary is the
+  quickest way to see what a first run actually achieved.
 - `op plugin init gh` hasn't been run, so whether it offers an existing vault
   credential or wants a new token is unknown.
 - Installs only. `apt_install` uses `--no-upgrade`, so re-running never

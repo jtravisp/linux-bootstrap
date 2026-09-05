@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Personal Linux bootstrap script (Ubuntu/Debian only).
+# Personal Linux bootstrap script (Ubuntu and derivatives only).
 # Idempotent: safe to re-run. Installs software + shell/terminal config
 # matching how this machine's owner sets things up.
 #
@@ -33,8 +33,11 @@ apt_install() {
   sudo apt-get install -y --no-upgrade "$@"
 }
 
-is_ubuntu_or_debian() {
-  [ -f /etc/os-release ] && grep -qiE '^ID(_LIKE)?=.*(debian|ubuntu)' /etc/os-release
+# Ubuntu and its derivatives (Mint, Pop!_OS, Zorin) only, not plain Debian:
+# the Docker repo URL below is the Ubuntu one, snapd isn't installed on Debian
+# by default, and the codename fallbacks are Ubuntu release names.
+is_ubuntu_like() {
+  [ -f /etc/os-release ] && grep -qiE '^(ID|ID_LIKE)=.*ubuntu' /etc/os-release
 }
 
 # `whoami` under `set -u`: $USER isn't guaranteed to be exported (it isn't under
@@ -83,8 +86,8 @@ OP_AWS_ITEM="op://Private/AWS SSO"
 # preflight
 # ---------------------------------------------------------------------------
 
-if ! is_ubuntu_or_debian; then
-  echo "This script targets Ubuntu/Debian (apt-based) systems only." >&2
+if ! is_ubuntu_like; then
+  echo "This script targets Ubuntu and its derivatives only." >&2
   exit 1
 fi
 
@@ -93,7 +96,23 @@ if [ "$(id -u)" -eq 0 ]; then
   exit 1
 fi
 
+# The vendor installers below drop binaries in ~/.local/bin, and every one of
+# them is guarded by `command -v`. Ubuntu's ~/.profile only adds that directory
+# to PATH if it already exists *at login*, which on a fresh machine it doesn't —
+# so without this, aws/uv/claude are invisible to those guards and get
+# reinstalled on every re-run until the next logout.
+mkdir -p "$HOME/.local/bin"
+export PATH="$HOME/.local/bin:$PATH"
+
 sudo -v
+
+# A full run takes longer than sudo's 15-minute timestamp (the snap downloads
+# alone are several GB), and the whole point of the layout below is that you can
+# walk away and come back to a single prompt. Without this you'd instead come
+# back to a password prompt somewhere in the middle. Dies with the script.
+while true; do sudo -n true; sleep 50; kill -0 "$$" 2>/dev/null || exit; done 2>/dev/null &
+SUDO_KEEPALIVE_PID=$!
+trap 'kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true' EXIT
 
 log "Updating apt package index"
 sudo apt-get update
@@ -109,7 +128,6 @@ apt_install \
   fontconfig
 
 # fd-find installs the binary as `fdfind`; symlink it to `fd`.
-mkdir -p "$HOME/.local/bin"
 if ! command -v fd &>/dev/null && [ -x /usr/bin/fdfind ]; then
   ln -sf /usr/bin/fdfind "$HOME/.local/bin/fd"
 fi
@@ -253,7 +271,7 @@ fi
 # Outside the install guard on purpose: if docker was already present but this
 # user isn't in the group yet (installed by other means, or a previous run that
 # died before this point), a re-run should still fix it.
-if getent group docker >/dev/null && ! id -nG "$USER_NAME" | grep -qw docker; then
+if getent group docker >/dev/null && ! id -nG "$USER_NAME" | grep -w docker >/dev/null; then
   log "Adding $USER_NAME to the docker group"
   sudo usermod -aG docker "$USER_NAME"
   warn "Log out and back in for docker group membership to take effect."
@@ -267,6 +285,12 @@ snap_installed() { snap list "$1" &>/dev/null; }
 
 install_snap() {
   local name="$1" classic="${2:-}"
+  # Ubuntu Server and some derivatives ship without snapd; warn rather than
+  # taking the whole run down over a browser.
+  if ! command -v snap &>/dev/null; then
+    warn "snapd not installed — skipping $name. Install it with: sudo apt-get install snapd"
+    return 0
+  fi
   if ! snap_installed "$name"; then
     log "Installing $name (snap)"
     if [ "$classic" = "classic" ]; then
@@ -360,10 +384,14 @@ clone_if_missing https://github.com/romkatv/powerlevel10k.git "$ZSH_CUSTOM/theme
 clone_if_missing https://github.com/zsh-users/zsh-autosuggestions.git "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
 clone_if_missing https://github.com/zsh-users/zsh-syntax-highlighting.git "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting"
 
-log "Installing MesloLGS Nerd Font (for powerlevel10k icons)"
 FONT_DIR="$HOME/.local/share/fonts"
 mkdir -p "$FONT_DIR"
-if ! fc-list | grep -qi "MesloLGS NF"; then
+# No `grep -q` here: it exits on the first match and closes the pipe, fc-list
+# dies of SIGPIPE, and `set -o pipefail` turns that into a failed test — which
+# re-downloaded all four fonts on every run. Letting grep drain the input costs
+# nothing and gets the right answer.
+if ! fc-list | grep -i "MesloLGS NF" >/dev/null; then
+  log "Installing MesloLGS Nerd Font (for powerlevel10k icons)"
   base="https://github.com/romkatv/powerlevel10k-media/raw/master"
   for f in "MesloLGS NF Regular.ttf" "MesloLGS NF Bold.ttf" "MesloLGS NF Italic.ttf" "MesloLGS NF Bold Italic.ttf"; do
     curl -fsSL "$base/${f// /%20}" -o "$FONT_DIR/$f"
@@ -388,6 +416,10 @@ link_dotfile() {
 }
 
 if [ -n "$REPO_DIR" ]; then
+  case "$REPO_DIR" in
+    /tmp/*|/var/tmp/*)
+      warn "This checkout is under $REPO_DIR, which is cleared on reboot. The dotfiles below are symlinks into it and will dangle. Move the repo somewhere permanent and re-run." ;;
+  esac
   log "Linking dotfiles from $REPO_DIR"
   link_dotfile "$REPO_DIR/zsh/.zshrc"      "$HOME/.zshrc"
   link_dotfile "$REPO_DIR/zsh/.p10k.zsh"   "$HOME/.p10k.zsh"
@@ -438,7 +470,8 @@ aws_config_needs_writing() {
 # waits until here: start the script, walk away, and the only thing still
 # wanting you is this prompt. Interactive runs only — it never blocks a piped
 # run — and pressing Enter straight away just falls through to the placeholder.
-if aws_config_needs_writing && [ -t 0 ] && ! op read "$OP_AWS_ITEM/start_url" &>/dev/null; then
+if aws_config_needs_writing && [ -t 0 ] && command -v op &>/dev/null \
+  && ! op read "$OP_AWS_ITEM/start_url" &>/dev/null; then
   cat <<'EOF'
 
 1Password isn't signed in yet (or CLI integration isn't on), so this run
@@ -473,6 +506,74 @@ fi
 # ---------------------------------------------------------------------------
 # done
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# summary — a 15-minute run scrolls a lot of output past, and `set -e` means a
+# skipped step leaves only a warning somewhere in the backlog. Say plainly what
+# is on the machine now.
+# ---------------------------------------------------------------------------
+
+MISSING=0
+
+check() {
+  local label="$1"
+  shift
+  if "$@" &>/dev/null; then
+    printf '  \033[1;32mok\033[0m    %s\n' "$label"
+  else
+    printf '  \033[1;31mMISS\033[0m  %s\n' "$label"
+    MISSING=$((MISSING + 1))
+  fi
+}
+
+has()      { command -v "$1" &>/dev/null; }
+has_snap() { command -v snap &>/dev/null && snap list "$1" &>/dev/null; }
+
+log "Summary"
+echo
+echo "apt:"
+for c in ghostty gh terraform signal-desktop claude-desktop 1password op docker node zsh; do
+  check "$c" has "$c"
+done
+echo
+echo "snap:"
+for c in brave steam code kubectl; do
+  check "$c" has_snap "$c"
+done
+echo
+echo "cli tools:"
+for c in git rg fd jq tmux fzf nvim; do
+  check "$c" has "$c"
+done
+echo
+echo "vendor installers (~/.local/bin):"
+for c in aws uv claude; do
+  check "$c" has "$c"
+done
+echo
+login_shell_is_zsh() { [ "$(getent passwd "$USER_NAME" | cut -d: -f7)" = "$(command -v zsh)" ]; }
+in_docker_group()    { id -nG "$USER_NAME" | grep -w docker >/dev/null; }
+font_installed()     { fc-list | grep -i "MesloLGS NF" >/dev/null; }
+ssh_uses_op_agent()  { grep -q '1password/agent.sock' "$HOME/.ssh/config"; }
+aws_config_is_real() { [ -f "$HOME/.aws/config" ] && ! aws_config_needs_writing; }
+op_agent_has_keys()  { SSH_AUTH_SOCK="$HOME/.1password/agent.sock" ssh-add -l; }
+
+echo "config:"
+check "zsh is the login shell"         login_shell_is_zsh
+check "docker group"                   in_docker_group
+check "MesloLGS NF font"               font_installed
+check "ssh uses the 1Password agent"   ssh_uses_op_agent
+check ".zshrc symlinked"               test -L "$HOME/.zshrc"
+check ".p10k.zsh symlinked"            test -L "$HOME/.p10k.zsh"
+check "ghostty config symlinked"       test -L "$HOME/.config/ghostty/config"
+check "AWS config has real values"     aws_config_is_real
+check "1Password CLI can read vault"   op read "$OP_AWS_ITEM/start_url"
+check "1Password agent serves keys"    op_agent_has_keys
+echo
+
+if [ "$MISSING" -gt 0 ]; then
+  warn "$MISSING item(s) above are missing. Most resolve by finishing the manual steps below and re-running ./install.sh."
+fi
 
 log "Done."
 cat <<'EOF'
