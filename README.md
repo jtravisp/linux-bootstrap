@@ -46,9 +46,11 @@ first run can't yet read anything from your vault.
 3. In the 1Password app: Settings > Developer, turn on **"Integrate with
    1Password CLI"** and **"Use the SSH Agent"**.
 4. Run `op plugin init gh` once, to authenticate `gh` via 1Password instead
-   of the OAuth device flow. The GitHub personal access token this needs
-   already exists in the vault from the first machine this was ever set up
-   on — you'll just be picking it, not creating a new one.
+   of the OAuth device flow. The vault already has GitHub-related
+   credentials in it (e.g. a "GH CLI WSL" item) — this may let you pick an
+   existing token instead of creating a new one, but that's not confirmed;
+   `op plugin init gh` itself has not actually been run as part of this
+   setup yet (see "Status").
 5. `./install.sh` again. This time `op` is signed in, so it reads the real
    `AWS SSO` vault item and writes a real `~/.aws/config` (see "1Password
    vault items" below — this item already exists in the account, nothing
@@ -106,8 +108,10 @@ soon as it's signed in, nothing here needs to be recreated:
 - A **Secure Note** named `AWS SSO` with three custom fields — `account_id`,
   `role_name`, `start_url` — matching `aws/config.template`. `install.sh`
   reads these via `op read op://Private/AWS SSO/<field>`.
-- A GitHub **personal access token**, created the first time
-  `op plugin init gh` ran — reused by every machine since.
+- A GitHub **personal access token** for `op plugin init gh` — the vault
+  has GitHub-related items already (e.g. "GH CLI WSL"), but whether
+  `op plugin init gh` picks one of those up cleanly or needs a fresh token
+  created is unconfirmed; that command hasn't actually been run yet.
 
 If you ever set this up for a different 1Password account from scratch,
 these three are what you need to create once, with those exact field names.
@@ -123,6 +127,12 @@ Verified for real on 2026-09-05, not just written and assumed correct:
   `~/.aws/config` was run against the real `AWS SSO` vault item and diffed
   byte-for-byte identical to this machine's actual `~/.aws/config`.
 
-Not yet verified: a truly from-scratch run on a brand new machine/VM (this
-was validated piece-by-piece on an already-provisioned machine, not as one
-unattended `./install.sh` run start to finish).
+Not yet verified:
+
+- `op plugin init gh` has not actually been run. Whether it cleanly offers
+  one of the vault's existing GitHub credentials or requires creating a new
+  token is unconfirmed — that command is interactive and wasn't run as
+  part of this setup.
+- A truly from-scratch run on a brand new machine/VM — this was validated
+  piece-by-piece on an already-provisioned machine, not as one unattended
+  `./install.sh` run start to finish.

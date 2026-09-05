@@ -59,7 +59,7 @@ sudo apt-get update
 
 log "Installing base packages"
 apt_install \
-  curl wget gnupg ca-certificates apt-transport-https software-properties-common \
+  curl wget gnupg ca-certificates \
   git zsh unzip jq ripgrep tmux fzf fd-find neovim
 
 # fd-find installs the binary as `fdfind`; symlink it to `fd`.
@@ -331,11 +331,11 @@ OP_AWS_ITEM="op://Private/AWS SSO"
 
 mkdir -p "$HOME/.aws"
 if [ ! -f "$HOME/.aws/config" ]; then
-  if command -v op &>/dev/null && op read "$OP_AWS_ITEM/start_url" &>/dev/null; then
+  if command -v op &>/dev/null \
+    && start_url=$(op read "$OP_AWS_ITEM/start_url" 2>/dev/null) \
+    && account_id=$(op read "$OP_AWS_ITEM/account_id" 2>/dev/null) \
+    && role_name=$(op read "$OP_AWS_ITEM/role_name" 2>/dev/null); then
     log "Populating ~/.aws/config from 1Password"
-    start_url=$(op read "$OP_AWS_ITEM/start_url")
-    account_id=$(op read "$OP_AWS_ITEM/account_id")
-    role_name=$(op read "$OP_AWS_ITEM/role_name")
     sed -e "s|<SSO_START_URL>|$start_url|" -e "s|<ACCOUNT_ID>|$account_id|" -e "s|<SSO_ROLE_NAME>|$role_name|" \
       "$REPO_DIR/aws/config.template" > "$HOME/.aws/config"
   else
@@ -352,13 +352,13 @@ log "Done."
 cat <<'EOF'
 
 Manual steps still needed:
-  - Sign in to 1Password (master password + secret key), then in
+  - Sign in to 1Password — use "Sign in with QR code" if offered (scan with
+    your phone) instead of typing the master password + secret key. Then in
     Settings > Developer turn on "Integrate with 1Password CLI" and
     "Use the SSH Agent". This is the one real login the rest below rides on.
   - Run `op plugin init gh` once to wire up `gh` via 1Password instead of
-    OAuth (first machine ever: paste a GitHub token to store; every machine
-    after: it just finds it). Add `source ~/.config/op/plugins.sh` to
-    ~/.zshrc if the plugin setup doesn't do it for you.
+    OAuth. Add `source ~/.config/op/plugins.sh` to ~/.zshrc if the plugin
+    setup doesn't do it for you.
   - If you haven't already, add your SSH key to a 1Password "SSH Key" vault
     item (Import existing, or generate a new one) — the agent then serves
     it over ~/.1password/agent.sock, no key file needed. Your existing
