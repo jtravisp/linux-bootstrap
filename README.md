@@ -133,12 +133,22 @@ zsh/.zshrc            ~/.zshrc
 zsh/.p10k.zsh         ~/.p10k.zsh
 ```
 
+## Tested
+
+Run start to finish on a pristine Ubuntu 26.04 LXD container: every package,
+snap and vendor installer lands, the interactive run answers both git identity
+prompts and the 1Password checkpoint, and it exits 0. A second run takes about
+five seconds and changes nothing — no re-downloaded fonts, no duplicated
+`Host *`, no backup files piling up. The `curl | bash` path skips the dotfiles
+with a warning instead of failing. Writing `~/.aws/config` from the vault, and
+repairing a placeholder one on a later run, were checked against a stub `op`.
+
 ## Known gaps
 
-- Never run start to finish on a clean machine — it's been validated
-  piece-by-piece on an already-provisioned one. The end-of-run summary is the
-  quickest way to see what a first run actually achieved.
-- `op plugin init gh` hasn't been run, so whether it offers an existing vault
-  credential or wants a new token is unknown.
+- Only tested in a container, not on real hardware or a VM. The Docker
+  *packages* install, but the daemon has never actually been started.
+- The 1Password paths are only proven against a stub `op`. The real vault
+  read, the SSH agent, and `op plugin init gh` all need a signed-in account
+  and haven't been exercised end to end on a fresh machine.
 - Installs only. `apt_install` uses `--no-upgrade`, so re-running never
   upgrades anything already present.
