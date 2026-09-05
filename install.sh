@@ -302,20 +302,32 @@ if ! command -v uv &>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
-# Node.js via nvm (latest LTS)
+# Node.js (NodeSource apt repo — deb.nodesource.com)
+#
+# NODE_MAJOR tracks the current LTS line; bump it when a new LTS lands.
+# NodeSource publishes a single distro-independent "nodistro" suite, so unlike
+# the HashiCorp/Docker repos there's no release codename to match.
 # ---------------------------------------------------------------------------
 
-export NVM_DIR="$HOME/.nvm"
-if [ ! -d "$NVM_DIR" ]; then
-  log "Installing nvm"
-  curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+NODE_MAJOR=24
+
+if ! dpkg -s nodejs &>/dev/null; then
+  log "Installing Node.js ${NODE_MAJOR}.x"
+  sudo mkdir -p -m 755 /etc/apt/keyrings
+  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    | sudo gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
+  sudo chmod go+r /etc/apt/keyrings/nodesource.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+    | sudo tee /etc/apt/sources.list.d/nodesource.list >/dev/null
+  sudo apt-get update
+  apt_install nodejs
 fi
-# shellcheck disable=SC1091
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-if ! command -v node &>/dev/null; then
-  log "Installing Node.js LTS"
-  nvm install --lts
-  nvm alias default 'lts/*'
+
+# nvm used to provide node here. It cost ~1.15s of every shell start, so it is
+# no longer installed or sourced — but an old install left behind still works
+# and will shadow the apt node, so say so rather than silently leaving two.
+if [ -d "$HOME/.nvm" ]; then
+  warn "$HOME/.nvm is left over from the old nvm setup and is no longer used. Remove it with: rm -rf ~/.nvm"
 fi
 
 # ---------------------------------------------------------------------------

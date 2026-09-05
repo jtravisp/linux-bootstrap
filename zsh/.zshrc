@@ -24,10 +24,6 @@ source $ZSH/oh-my-zsh.sh
 
 export PATH="$HOME/.local/bin:$PATH"
 
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
-[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
-
 # fzf key bindings (Ctrl-R history search, Ctrl-T file search). Debian/Ubuntu's
 # fzf package ships these separately rather than wiring them up on install.
 [ -f /usr/share/doc/fzf/examples/key-bindings.zsh ] && \

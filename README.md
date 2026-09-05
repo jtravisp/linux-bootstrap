@@ -1,13 +1,13 @@
 # linux-bootstrap
 
-Personal bootstrap script for setting up a fresh Ubuntu/Debian install with
-the software and terminal config I actually use.
+Turns a fresh Ubuntu/Debian install into my working machine: the software I
+use, my shell and terminal config, and enough of my AWS/SSH/GitHub setup that
+the only things left are the logins nobody can automate.
 
-**Status:** the 1Password integration (SSH agent, CLI, AWS config
-population) has been verified against a real account and a real vault item.
-See "Status" below for exactly what's covered and what still isn't.
+Everything here is personal — the package list, the dotfiles, and the
+1Password vault item names are mine. Fork it and change them if you're not me.
 
-## Usage
+## Run it
 
 ```sh
 git clone git@github.com:jtravisp/linux-bootstrap.git
@@ -15,178 +15,122 @@ cd linux-bootstrap
 ./install.sh
 ```
 
-Or directly:
+Keep the checkout — `~/.zshrc`, `~/.p10k.zsh`, and the Ghostty config are
+symlinked into it, so edits you make on the machine show up as diffs here.
+
+You can also run it without cloning:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/jtravisp/linux-bootstrap/main/install.sh | bash
 ```
 
-(Note: piping to `bash` this way installs all the software fine, but skips
-the dotfiles — `.zshrc`, `.p10k.zsh`, Ghostty config — and `~/.aws/config`,
-since there's no local checkout for `install.sh` to link them from. It
-warns rather than crashes when it hits those steps. Clone the repo first
-if you want those too.)
+That installs all the software, but skips the dotfiles and `~/.aws/config` —
+there's no checkout to link them from. It warns and carries on rather than
+failing.
 
-The script is idempotent — safe to re-run, it skips anything already
-installed. Re-running is also the intended fix for a half-finished first
-run: it will add you to the `docker` group if that didn't happen, and
-rewrite a placeholder `~/.aws/config` with real values once 1Password is
-signed in. Any pre-existing real file it would replace is moved to
-`<name>.bak.<timestamp>` rather than overwritten.
+Re-running is safe, and is the intended fix for a half-finished first run. It
+skips anything already installed, adds you to the `docker` group if that
+hasn't happened, and replaces a placeholder `~/.aws/config` with real values
+once 1Password is signed in. Anything it would overwrite is moved to
+`<name>.bak.<timestamp>` first.
 
-## Full walkthrough on a brand new machine
+## The one manual step
 
-There's one unavoidable chicken-and-egg step: the script installs
-1Password, but can't sign into it for you. `install.sh` handles this with a
-single interactive pause, deliberately placed after every unattended step so
-nothing else is waiting on you — sign in during the pause and the same run
-finishes with a real `~/.aws/config`; skip the pause (or run
-non-interactively) and it falls back to a placeholder you fix up with a
-second run.
+The script installs 1Password but can't sign in for you, and the AWS SSO
+details live in the vault. So once all the unattended work is done, it stops
+and waits:
 
-1. `./install.sh`. Every unattended install runs first, so you can start it
-   and walk away. At the very end, if `op` still can't read your vault, it
-   pauses:
-   - Open 1Password, sign in — use **"Sign in with QR code"** if offered,
-     scanning with your phone instead of typing the master password +
-     secret key by hand.
-   - In the app: Settings > Developer, turn on **"Integrate with 1Password
-     CLI"** and **"Use the SSH Agent"**.
-   - Back in the terminal, press Enter to continue. The script then reads
-     the real `AWS SSO` vault item and writes a real `~/.aws/config` (see
-     "1Password vault items" below — this item already exists in the
-     account, nothing to create).
-   - Prefer to deal with 1Password later? Just press Enter immediately —
-     you'll get the placeholder `~/.aws/config` instead. Re-run
-     `./install.sh` any time after signing in and it replaces the
-     placeholder with the real thing.
-2. Run `op plugin init gh` once, to authenticate `gh` via 1Password instead
-   of the OAuth device flow. The vault already has GitHub-related
-   credentials in it (e.g. a "GH CLI WSL" item) — this may let you pick an
-   existing token instead of creating a new one, but that's not confirmed;
-   `op plugin init gh` itself has not actually been run as part of this
-   setup yet (see "Status").
-3. `aws sso login --profile tp-site` (once `~/.aws/config` has real values).
-4. Sign in to the rest: Brave sync, Steam, Signal (link device via QR),
+- Open 1Password and sign in — **"Sign in with QR code"** scanned from your
+  phone is much faster than typing the master password and secret key.
+- Settings > Developer: turn on **"Integrate with 1Password CLI"** and **"Use
+  the SSH Agent"**.
+- Press Enter. The run finishes with a real `~/.aws/config` and a working SSH
+  agent.
+
+Press Enter without doing any of it and you get a placeholder `~/.aws/config`
+instead; sign in later and re-run the script to fill it in.
+
+## After it finishes
+
+1. `op plugin init gh` — authenticates `gh` through 1Password instead of the
+   OAuth device flow. `~/.zshrc` already picks up `~/.config/op/plugins.sh`.
+2. `aws sso login --profile tp-site`
+3. Log out and back in, so the zsh login shell and `docker` group take effect.
+4. Sign in to the GUI apps: Brave sync, Steam, Signal (link device by QR),
    Claude Desktop, VS Code.
-5. Log out and back in, for the zsh default shell and `docker` group
-   changes to take effect.
-6. Optional: `p10k configure` if you want to redo the prompt from scratch
-   instead of using the bundled `~/.p10k.zsh`.
 
 ## What it installs
 
-- **apt (official repos)**: Ghostty, GitHub CLI, Terraform, Signal Desktop,
-  Claude Desktop, Docker, 1Password + 1Password CLI
+- **apt**: Ghostty, GitHub CLI, Terraform, Signal Desktop, Claude Desktop,
+  Docker, 1Password + 1Password CLI, Node.js (NodeSource)
 - **snap**: Brave, Steam, VS Code, kubectl
-- **official installer scripts**: AWS CLI v2, uv (both install to
-  `~/.local`, no sudo), Claude Code CLI, nvm + Node.js LTS
+- **vendor installers** (user-local, no sudo): AWS CLI v2, uv, Claude Code CLI
 - **shell**: zsh, oh-my-zsh, powerlevel10k, zsh-autosuggestions,
   zsh-syntax-highlighting, MesloLGS Nerd Font
 - **CLI tools**: git, jq, ripgrep, tmux, fzf, fd, neovim
 
-1Password is installed via its official apt repo, not snap — **the SSH
-agent and CLI integration do not work with the Snap Store or Flatpak
-builds**, confirmed against 1Password's own docs and by testing both.
+Install 1Password from its apt repo, not snap or Flatpak — the SSH agent and
+CLI integration don't work in those builds.
 
-All third-party apt signing keys live in `/etc/apt/keyrings/` (not
-`/usr/share/keyrings/`, which some vendors' own docs still use) — per
-Debian's own guidance, keys go in `/usr/share/keyrings/` only if a package
-will keep them updated automatically; none of these are, so
-`/etc/apt/keyrings/` (locally-managed) is the correct spot for all of them.
+Node.js comes from NodeSource as a plain apt package rather than through a
+version manager. `NODE_MAJOR` near the top of the Node section in
+`install.sh` tracks the current LTS line; bump it when a new LTS lands. If you
+later need per-project Node versions, add `fnm` — it reads `.nvmrc` and costs
+about a millisecond of shell startup.
 
 ## What it configures
 
-- Symlinks `~/.zshrc`, `~/.p10k.zsh`, and `~/.config/ghostty/config` to the
-  copies in this checkout — symlinks rather than copies so that a tweak made
-  on the machine shows up as a diff here instead of silently drifting away
-  from the repo. Run `./install.sh` from wherever you want the checkout to
-  live permanently.
-- Sources fzf's key bindings and, once `op plugin init` has been run,
-  `~/.config/op/plugins.sh` from `~/.zshrc`
-- Sets zsh as the default shell
-- Prompts for git `user.name`/`user.email` if not already set (interactive
-  runs only)
-- Appends a `Host *` block to `~/.ssh/config` pointing at the 1Password SSH
-  agent socket (`~/.1password/agent.sock`) — appended, not prepended,
-  because ssh uses the *first* value it finds for a keyword, so a `Host *`
-  block at the top of the file would override every per-host setting below it
-- Writes `~/.aws/config` from the `AWS SSO` 1Password item if `op` is
-  signed in, otherwise a placeholder template
+- Symlinks `~/.zshrc`, `~/.p10k.zsh`, `~/.config/ghostty/config` into this
+  checkout
+- Sets zsh as the login shell
+- Points `~/.ssh/config` at the 1Password SSH agent (`~/.1password/agent.sock`)
+- Writes `~/.aws/config` from the `AWS SSO` vault item, or a placeholder if
+  1Password isn't readable
+- Prompts for git `user.name` / `user.email` if unset
 
-## What it deliberately does NOT do
+Prompt appearance lives entirely in `~/.p10k.zsh` — `~/.zshrc` sets no
+`POWERLEVEL9K_*` variables, since `.p10k.zsh` unsets them all when it loads.
+Run `p10k configure` to change the prompt.
 
-- Touch SSH keys (generate, copy, or otherwise) — restore/migrate yours
-  into 1Password yourself (Import in the app, or let it generate a new one)
-- Commit real AWS account IDs / SSO URLs — this is a public repo
-- Silently authenticate `gh` or unlock 1Password — those need one manual
-  step per machine (see the walkthrough above)
+## What it won't do
 
-## 1Password vault items (already set up in the account — reference only)
+- **Touch SSH keys.** Import yours into 1Password, or let it generate one —
+  the agent serves it over the socket, so no key file is needed. Any existing
+  `~/.ssh/id_*` is left alone.
+- **Store real AWS account IDs or SSO URLs.** This repo is public; those come
+  from 1Password at runtime.
+- **Log you in anywhere.** 1Password and `gh` each need one manual step per
+  machine.
 
-These live in the `Private` vault of the 1Password account this was built
-for. They're per-account, not per-machine — a new machine picks them up as
-soon as it's signed in, nothing here needs to be recreated:
+## 1Password vault items
 
-- An **SSH Key** item holding the real SSH key the agent serves.
-- A **Secure Note** named `AWS SSO` with three custom fields — `account_id`,
-  `role_name`, `start_url` — matching `aws/config.template`. `install.sh`
-  reads these via `op read op://Private/AWS SSO/<field>`.
-- A GitHub **personal access token** for `op plugin init gh` — the vault
-  has GitHub-related items already (e.g. "GH CLI WSL"), but whether
-  `op plugin init gh` picks one of those up cleanly or needs a fresh token
-  created is unconfirmed; that command hasn't actually been run yet.
+In the `Private` vault. These are per-account, not per-machine — a new machine
+picks them up as soon as it's signed in.
 
-If you ever set this up for a different 1Password account from scratch,
-these three are what you need to create once, with those exact field names.
+| Item | Type | Used for |
+| --- | --- | --- |
+| (any) | SSH Key | The key the SSH agent serves |
+| `AWS SSO` | Secure Note | Fields `account_id`, `role_name`, `start_url` → `~/.aws/config` |
+| GitHub token | Login / API Credential | `op plugin init gh` |
 
-## Status
+`install.sh` reads the AWS fields with `op read "op://Private/AWS SSO/<field>"`,
+so those field names have to match `aws/config.template`.
 
-Verified for real on 2026-09-05, not just written and assumed correct:
+## Layout
 
-- `ssh-add -l` against `~/.1password/agent.sock` lists real keys from the
-  vault — the agent works.
-- `op vault list` / `op read` succeed against the real account.
-- The exact `op read` + `sed` logic `install.sh` uses to build
-  `~/.aws/config` was run against the real `AWS SSO` vault item and diffed
-  byte-for-byte identical to this machine's actual `~/.aws/config` — twice,
-  before and after a later refactor of that same code path.
-- The `curl | bash` path used to crash immediately (`BASH_SOURCE[0]:
-  unbound variable`, tripped by `set -u`) before installing anything —
-  reproduced against the real file on GitHub, then fixed and re-confirmed
-  it now exits cleanly and just skips the checkout-dependent steps.
-- Ubuntu 26.04 "resolute" is new enough that third-party repos were worth
-  checking rather than assuming: `ghostty` is in `resolute/universe`, and
-  both HashiCorp's and Docker's apt repos publish a real `resolute` suite
-  (a bogus codename 404s on both, so those aren't catch-all responses).
-  `install.sh` now probes for the codename anyway and falls back to the
-  newest suite a repo does publish, since that lag is the likeliest way a
-  bootstrap run breaks on a just-released distro. The fallback path itself
-  was exercised by feeding `repo_suite` a bogus codename: it warns and drops
-  to the newest suite the repo actually has.
-- `awscli.amazonaws.com/v2/install.sh` is real and defaults to
-  `~/.local/share` + `~/.local/bin`, as claimed above.
-- The `POWERLEVEL9K_*` block that used to sit in `zsh/.zshrc` was dead: line
-  27 of `zsh/.p10k.zsh` does `unset -m '(POWERLEVEL9K_*|DEFAULT_USER)~...'`,
-  and a live shell confirmed the values in effect all came from `.p10k.zsh`,
-  never from `.zshrc`. That block is gone.
-- fzf's zsh integration really does live at
-  `/usr/share/doc/fzf/examples/{key-bindings,completion}.zsh` — checked
-  against the contents of the `fzf` .deb this release ships.
-- `install.sh` is `shellcheck -S style` clean.
-- The Signal `.sources` keyring-path rewrite (`/usr/share/keyrings/` →
-  `/etc/apt/keyrings/`) was tested against the real file Signal serves.
+```
+install.sh            everything, top to bottom
+aws/config.template   ~/.aws/config, with <PLACEHOLDERS> for the vault values
+ghostty/config        ~/.config/ghostty/config
+zsh/.zshrc            ~/.zshrc
+zsh/.p10k.zsh         ~/.p10k.zsh
+```
 
-Not yet verified:
+## Known gaps
 
-- `op plugin init gh` has not actually been run. Whether it cleanly offers
-  one of the vault's existing GitHub credentials or requires creating a new
-  token is unconfirmed — that command is interactive and wasn't run as
-  part of this setup.
-- The 1Password pause (sign in during the pause, press Enter, continue in
-  the same run) — the pieces it's built from are each verified (the
-  `op read` check, the AWS section it feeds into), but the actual live
-  experience of pausing and resuming hasn't been run end to end.
-- A truly from-scratch run on a brand new machine/VM — this was validated
-  piece-by-piece on an already-provisioned machine, not as one unattended
-  `./install.sh` run start to finish.
+- Never run start to finish on a clean machine — it's been validated
+  piece-by-piece on an already-provisioned one.
+- `op plugin init gh` hasn't been run, so whether it offers an existing vault
+  credential or wants a new token is unknown.
+- Installs only. `apt_install` uses `--no-upgrade`, so re-running never
+  upgrades anything already present.
