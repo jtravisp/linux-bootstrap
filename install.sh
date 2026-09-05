@@ -29,8 +29,12 @@ warn() { printf '\033[1;33m!!\033[0m %s\n' "$1"; }
 
 # Idempotent by construction: --no-upgrade leaves already-installed packages
 # alone (no re-install, no upgrade) and only acts on the ones that are missing.
+#
+# DEBIAN_FRONTEND=noninteractive because there is no one to answer debconf: a
+# package that wants to prompt (tzdata, a licence to accept) would otherwise
+# stall an unattended run forever with its question buried in apt's output.
 apt_install() {
-  sudo apt-get install -y --no-upgrade "$@"
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade "$@"
 }
 
 # Ubuntu and its derivatives (Mint, Pop!_OS, Zorin) only, not plain Debian:
@@ -81,6 +85,19 @@ backup_if_real_file() {
 # 1Password vault item ~/.aws/config gets populated from — see README's
 # "1Password vault items" section.
 OP_AWS_ITEM="op://Private/AWS SSO"
+
+# `op read` opens /dev/tty directly to ask "Do you want to add an account
+# manually now? [Y/n]" when 1Password CLI has no account configured yet —
+# which is exactly the state a fresh machine is in. Because it uses /dev/tty
+# rather than stdin, neither `</dev/null` nor `&>/dev/null` stops it: the
+# script would sit there forever with the question hidden behind the redirect
+# and nothing on screen to explain why. `timeout` doesn't help either, since op
+# ignores SIGTERM while prompting. Running it in a new session leaves it with
+# no controlling terminal to prompt on, so it fails fast instead; -w preserves
+# the child's stdout and exit status, which the callers below depend on.
+op_read() {
+  setsid -w op read "$1" 2>/dev/null
+}
 
 # ---------------------------------------------------------------------------
 # preflight
@@ -377,6 +394,43 @@ if ! command -v claude &>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
+# dotfiles
+# ---------------------------------------------------------------------------
+
+# Symlinked, not copied: the checkout is the source of truth, so a tweak made
+# on the machine shows up as a diff in this repo instead of quietly drifting
+# away from it. Any pre-existing real file is moved aside first, never eaten.
+#
+# This runs *before* oh-my-zsh is installed on purpose. Its installer only
+# honours KEEP_ZSHRC for a ~/.zshrc that already exists, and writes its own
+# template when there isn't one — so running it first meant every fresh
+# machine generated a throwaway .zshrc that we then dutifully backed up,
+# leaving a pointless .zshrc.bak.<timestamp> behind on every first install.
+link_dotfile() {
+  local src="$1" dest="$2"
+  if [ -L "$dest" ] && [ "$(readlink -f "$dest")" = "$(readlink -f "$src")" ]; then
+    return 0
+  fi
+  backup_if_real_file "$dest"
+  ln -sfn "$src" "$dest"
+}
+
+if [ -n "$REPO_DIR" ]; then
+  case "$REPO_DIR" in
+    /tmp/*|/var/tmp/*)
+      warn "This checkout is under $REPO_DIR, which is cleared on reboot. The dotfiles below are symlinks into it and will dangle. Move the repo somewhere permanent and re-run." ;;
+  esac
+  log "Linking dotfiles from $REPO_DIR"
+  link_dotfile "$REPO_DIR/zsh/.zshrc"      "$HOME/.zshrc"
+  link_dotfile "$REPO_DIR/zsh/.p10k.zsh"   "$HOME/.p10k.zsh"
+
+  mkdir -p "$HOME/.config/ghostty"
+  link_dotfile "$REPO_DIR/ghostty/config"  "$HOME/.config/ghostty/config"
+else
+  warn "No local checkout found (ran via curl | bash) — skipping dotfiles (.zshrc, .p10k.zsh, Ghostty config). Clone the repo and run ./install.sh directly to get these."
+fi
+
+# ---------------------------------------------------------------------------
 # zsh: oh-my-zsh + powerlevel10k + plugins + Nerd Font
 # ---------------------------------------------------------------------------
 
@@ -410,37 +464,6 @@ if ! fc-list | grep -i "MesloLGS NF" >/dev/null; then
     curl -fsSL "$base/${f// /%20}" -o "$FONT_DIR/$f"
   done
   fc-cache -f "$FONT_DIR" >/dev/null
-fi
-
-# ---------------------------------------------------------------------------
-# dotfiles
-# ---------------------------------------------------------------------------
-
-# Symlinked, not copied: the checkout is the source of truth, so a tweak made
-# on the machine shows up as a diff in this repo instead of quietly drifting
-# away from it. Any pre-existing real file is moved aside first, never eaten.
-link_dotfile() {
-  local src="$1" dest="$2"
-  if [ -L "$dest" ] && [ "$(readlink -f "$dest")" = "$(readlink -f "$src")" ]; then
-    return 0
-  fi
-  backup_if_real_file "$dest"
-  ln -sfn "$src" "$dest"
-}
-
-if [ -n "$REPO_DIR" ]; then
-  case "$REPO_DIR" in
-    /tmp/*|/var/tmp/*)
-      warn "This checkout is under $REPO_DIR, which is cleared on reboot. The dotfiles below are symlinks into it and will dangle. Move the repo somewhere permanent and re-run." ;;
-  esac
-  log "Linking dotfiles from $REPO_DIR"
-  link_dotfile "$REPO_DIR/zsh/.zshrc"      "$HOME/.zshrc"
-  link_dotfile "$REPO_DIR/zsh/.p10k.zsh"   "$HOME/.p10k.zsh"
-
-  mkdir -p "$HOME/.config/ghostty"
-  link_dotfile "$REPO_DIR/ghostty/config"  "$HOME/.config/ghostty/config"
-else
-  warn "No local checkout found (ran via curl | bash) — skipping dotfiles (.zshrc, .p10k.zsh, Ghostty config). Clone the repo and run ./install.sh directly to get these."
 fi
 
 # ---------------------------------------------------------------------------
@@ -484,7 +507,7 @@ aws_config_needs_writing() {
 # wanting you is this prompt. Interactive runs only — it never blocks a piped
 # run — and pressing Enter straight away just falls through to the placeholder.
 if aws_config_needs_writing && [ -t 0 ] && command -v op &>/dev/null \
-  && ! op read "$OP_AWS_ITEM/start_url" &>/dev/null; then
+  && ! op_read "$OP_AWS_ITEM/start_url" >/dev/null; then
   cat <<'EOF'
 
 1Password isn't signed in yet (or CLI integration isn't on), so this run
@@ -501,9 +524,9 @@ if ! aws_config_needs_writing; then
 elif [ -z "$REPO_DIR" ]; then
   warn "No local checkout found (ran via curl | bash) — skipping ~/.aws/config (its template lives in the repo). Clone the repo and run ./install.sh directly to get this."
 elif command -v op &>/dev/null \
-  && start_url=$(op read "$OP_AWS_ITEM/start_url" 2>/dev/null) \
-  && account_id=$(op read "$OP_AWS_ITEM/account_id" 2>/dev/null) \
-  && role_name=$(op read "$OP_AWS_ITEM/role_name" 2>/dev/null); then
+  && start_url=$(op_read "$OP_AWS_ITEM/start_url") \
+  && account_id=$(op_read "$OP_AWS_ITEM/account_id") \
+  && role_name=$(op_read "$OP_AWS_ITEM/role_name"); then
   log "Populating ~/.aws/config from 1Password"
   backup_if_real_file "$HOME/.aws/config"
   sed -e "s|<SSO_START_URL>|$start_url|" -e "s|<ACCOUNT_ID>|$account_id|" -e "s|<SSO_ROLE_NAME>|$role_name|" \
@@ -580,7 +603,7 @@ check ".zshrc symlinked"               test -L "$HOME/.zshrc"
 check ".p10k.zsh symlinked"            test -L "$HOME/.p10k.zsh"
 check "ghostty config symlinked"       test -L "$HOME/.config/ghostty/config"
 check "AWS config has real values"     aws_config_is_real
-check "1Password CLI can read vault"   op read "$OP_AWS_ITEM/start_url"
+check "1Password CLI can read vault"   op_read "$OP_AWS_ITEM/start_url"
 check "1Password agent serves keys"    op_agent_has_keys
 echo
 
