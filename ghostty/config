@@ -1,0 +1,12 @@
+# Font: MesloLGS NF is required for powerlevel10k's icons/glyphs to render.
+font-family = MesloLGS NF
+font-size = 12
+
+# Launch zsh directly, independent of the account's default login shell
+# (in case you haven't run `chsh` yet).
+command = zsh
+
+# Scrollback
+scrollback-limit = 10000
+
+keybind = ctrl+enter=unbind
