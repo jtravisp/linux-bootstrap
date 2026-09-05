@@ -5,8 +5,9 @@ the software and terminal config I actually use.
 
 **Status:** the 1Password integration (SSH agent, CLI, AWS config
 population) has been verified end-to-end against a real account and a real
-vault item — not just written and hoped for. See "Status" below for what
-that verification covered.
+vault item, and a real `curl | bash` crash bug was reproduced and fixed —
+not just written and hoped for. See "Status" below for exactly what's
+covered and what still isn't.
 
 ## Usage
 
@@ -22,45 +23,50 @@ Or directly:
 curl -fsSL https://raw.githubusercontent.com/jtravisp/linux-bootstrap/main/install.sh | bash
 ```
 
-(Note: piping to `bash` this way skips deploying the dotfiles in this repo,
-since there's no local checkout for `install.sh` to copy them from — clone
-the repo first if you want the Ghostty config and zsh setup applied too.)
+(Note: piping to `bash` this way installs all the software fine, but skips
+the dotfiles — `.zshrc`, `.p10k.zsh`, Ghostty config — and `~/.aws/config`,
+since there's no local checkout for `install.sh` to copy them from. It
+warns rather than crashes when it hits those steps. Clone the repo first
+if you want those too.)
 
 The script is idempotent — safe to re-run, it skips anything already
-installed. **You will re-run it once**, deliberately — see the walkthrough
-below.
+installed.
 
 ## Full walkthrough on a brand new machine
 
-Order matters here because of one unavoidable chicken-and-egg step: the
-script installs 1Password, but can't sign into it for you, so the very
-first run can't yet read anything from your vault.
+There's one unavoidable chicken-and-egg step: the script installs
+1Password, but can't sign into it for you. `install.sh` handles this with
+a single interactive pause mid-run — sign in during the pause and the same
+run finishes with a real `~/.aws/config`; skip the pause (or run
+non-interactively) and it falls back to a placeholder you fix up with a
+second run.
 
-1. `./install.sh` — installs everything (software, shell, dotfiles, SSH
-   config pointed at the 1Password agent socket). Since 1Password isn't
-   signed in yet, `~/.aws/config` gets written as a placeholder at this
-   point — that's expected, not a bug.
-2. Open 1Password, sign in. Use **"Sign in with QR code"** if it's offered
-   — scan it with the mobile app (already signed into your account) instead
-   of typing the master password + secret key by hand.
-3. In the 1Password app: Settings > Developer, turn on **"Integrate with
-   1Password CLI"** and **"Use the SSH Agent"**.
-4. Run `op plugin init gh` once, to authenticate `gh` via 1Password instead
+1. `./install.sh`. Partway through, once 1Password itself is installed, it
+   pauses if `op` can't yet read your vault:
+   - Open 1Password, sign in — use **"Sign in with QR code"** if offered,
+     scanning with your phone instead of typing the master password +
+     secret key by hand.
+   - In the app: Settings > Developer, turn on **"Integrate with 1Password
+     CLI"** and **"Use the SSH Agent"**.
+   - Back in the terminal, press Enter to continue. The script then reads
+     the real `AWS SSO` vault item and writes a real `~/.aws/config` (see
+     "1Password vault items" below — this item already exists in the
+     account, nothing to create).
+   - Prefer to deal with 1Password later? Just press Enter immediately —
+     you'll get the placeholder `~/.aws/config` instead, fixable by
+     re-running `./install.sh` any time after you've signed in.
+2. Run `op plugin init gh` once, to authenticate `gh` via 1Password instead
    of the OAuth device flow. The vault already has GitHub-related
    credentials in it (e.g. a "GH CLI WSL" item) — this may let you pick an
    existing token instead of creating a new one, but that's not confirmed;
    `op plugin init gh` itself has not actually been run as part of this
    setup yet (see "Status").
-5. `./install.sh` again. This time `op` is signed in, so it reads the real
-   `AWS SSO` vault item and writes a real `~/.aws/config` (see "1Password
-   vault items" below — this item already exists in the account, nothing
-   to create).
-6. `aws sso login --profile tp-site`.
-7. Sign in to the rest: Brave sync, Steam, Signal (link device via QR),
+3. `aws sso login --profile tp-site` (once `~/.aws/config` has real values).
+4. Sign in to the rest: Brave sync, Steam, Signal (link device via QR),
    Claude Desktop, VS Code.
-8. Log out and back in, for the zsh default shell and `docker` group
+5. Log out and back in, for the zsh default shell and `docker` group
    changes to take effect.
-9. Optional: `p10k configure` if you want to redo the prompt from scratch
+6. Optional: `p10k configure` if you want to redo the prompt from scratch
    instead of using the bundled `~/.p10k.zsh`.
 
 ## What it installs
@@ -77,6 +83,12 @@ first run can't yet read anything from your vault.
 1Password is installed via its official apt repo, not snap — **the SSH
 agent and CLI integration do not work with the Snap Store or Flatpak
 builds**, confirmed against 1Password's own docs and by testing both.
+
+All third-party apt signing keys live in `/etc/apt/keyrings/` (not
+`/usr/share/keyrings/`, which some vendors' own docs still use) — per
+Debian's own guidance, keys go in `/usr/share/keyrings/` only if a package
+will keep them updated automatically; none of these are, so
+`/etc/apt/keyrings/` (locally-managed) is the correct spot for all of them.
 
 ## What it configures
 
@@ -125,7 +137,14 @@ Verified for real on 2026-09-05, not just written and assumed correct:
 - `op vault list` / `op read` succeed against the real account.
 - The exact `op read` + `sed` logic `install.sh` uses to build
   `~/.aws/config` was run against the real `AWS SSO` vault item and diffed
-  byte-for-byte identical to this machine's actual `~/.aws/config`.
+  byte-for-byte identical to this machine's actual `~/.aws/config` — twice,
+  before and after a later refactor of that same code path.
+- The `curl | bash` path used to crash immediately (`BASH_SOURCE[0]:
+  unbound variable`, tripped by `set -u`) before installing anything —
+  reproduced against the real file on GitHub, then fixed and re-confirmed
+  it now exits cleanly and just skips the checkout-dependent steps.
+- The Signal `.sources` keyring-path rewrite (`/usr/share/keyrings/` →
+  `/etc/apt/keyrings/`) was tested against the real file Signal serves.
 
 Not yet verified:
 
@@ -133,6 +152,10 @@ Not yet verified:
   one of the vault's existing GitHub credentials or requires creating a new
   token is unconfirmed — that command is interactive and wasn't run as
   part of this setup.
+- The mid-script 1Password pause (sign in during the pause, press Enter,
+  continue in the same run) — the pieces it's built from are each verified
+  (the `op read` check, the AWS section it feeds into), but the actual live
+  experience of pausing and resuming hasn't been run end to end.
 - A truly from-scratch run on a brand new machine/VM — this was validated
   piece-by-piece on an already-provisioned machine, not as one unattended
   `./install.sh` run start to finish.

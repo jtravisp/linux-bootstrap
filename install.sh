@@ -9,7 +9,16 @@
 
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# ${BASH_SOURCE[0]} is unset when the script runs via `curl ... | bash` (no
+# file on disk to source from) — under `set -u` that's a hard crash unless
+# guarded. REPO_DIR is empty in that case; steps that need a local checkout
+# (dotfiles, aws/config.template) check for that and skip with a warning
+# instead of failing.
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+  REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+  REPO_DIR=""
+fi
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -18,21 +27,19 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 log()  { printf '\n\033[1;34m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$1"; }
 
-apt_pkg_installed() { dpkg -s "$1" &>/dev/null; }
-
+# Idempotent by construction: --no-upgrade leaves already-installed packages
+# alone (no re-install, no upgrade) and only acts on the ones that are missing.
 apt_install() {
-  local pkgs=()
-  for p in "$@"; do
-    apt_pkg_installed "$p" || pkgs+=("$p")
-  done
-  if [ "${#pkgs[@]}" -gt 0 ]; then
-    sudo apt-get install -y "${pkgs[@]}"
-  fi
+  sudo apt-get install -y --no-upgrade "$@"
 }
 
 is_ubuntu_or_debian() {
   [ -f /etc/os-release ] && grep -qiE '^ID(_LIKE)?=.*(debian|ubuntu)' /etc/os-release
 }
+
+# 1Password vault item ~/.aws/config gets populated from — see README's
+# "1Password vault items" section.
+OP_AWS_ITEM="op://Private/AWS SSO"
 
 # ---------------------------------------------------------------------------
 # preflight
@@ -94,8 +101,9 @@ fi
 
 if ! command -v terraform &>/dev/null; then
   log "Installing Terraform"
-  wget -O - https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(. /etc/os-release && echo "$VERSION_CODENAME") main" \
+  sudo mkdir -p -m 755 /etc/apt/keyrings
+  wget -O - https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/hashicorp-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(. /etc/os-release && echo "$VERSION_CODENAME") main" \
     | sudo tee /etc/apt/sources.list.d/hashicorp.list >/dev/null
   sudo apt-get update
   apt_install terraform
@@ -107,9 +115,11 @@ fi
 
 if ! command -v signal-desktop &>/dev/null; then
   log "Installing Signal Desktop"
+  sudo mkdir -p -m 755 /etc/apt/keyrings
   curl -fsSL https://updates.signal.org/desktop/apt/keys.asc | gpg --dearmor > /tmp/signal-desktop-keyring.gpg
-  sudo cp /tmp/signal-desktop-keyring.gpg /usr/share/keyrings/signal-desktop-keyring.gpg
+  sudo cp /tmp/signal-desktop-keyring.gpg /etc/apt/keyrings/signal-desktop-keyring.gpg
   curl -fsSL -o /tmp/signal-desktop.sources https://updates.signal.org/static/desktop/apt/signal-desktop.sources
+  sudo sed -i 's|/usr/share/keyrings/|/etc/apt/keyrings/|' /tmp/signal-desktop.sources
   sudo cp /tmp/signal-desktop.sources /etc/apt/sources.list.d/signal-desktop.sources
   sudo apt-get update
   apt_install signal-desktop
@@ -121,8 +131,9 @@ fi
 
 if ! command -v claude-desktop &>/dev/null; then
   log "Installing Claude Desktop"
-  sudo curl -fsSLo /usr/share/keyrings/claude-desktop-archive-keyring.asc https://downloads.claude.ai/claude-desktop/key.asc
-  echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/claude-desktop-archive-keyring.asc] https://downloads.claude.ai/claude-desktop/apt/stable stable main" \
+  sudo mkdir -p -m 755 /etc/apt/keyrings
+  sudo curl -fsSLo /etc/apt/keyrings/claude-desktop-archive-keyring.asc https://downloads.claude.ai/claude-desktop/key.asc
+  echo "deb [arch=amd64,arm64 signed-by=/etc/apt/keyrings/claude-desktop-archive-keyring.asc] https://downloads.claude.ai/claude-desktop/apt/stable stable main" \
     | sudo tee /etc/apt/sources.list.d/claude-desktop.list >/dev/null
   sudo apt-get update
   apt_install claude-desktop
@@ -136,12 +147,15 @@ fi
 # Snap Store build.
 # ---------------------------------------------------------------------------
 
-if ! apt_pkg_installed 1password || ! apt_pkg_installed 1password-cli; then
+if ! command -v 1password &>/dev/null || ! command -v op &>/dev/null; then
   log "Installing 1Password + 1Password CLI"
+  sudo mkdir -p -m 755 /etc/apt/keyrings
   curl -sS https://downloads.1password.com/linux/keys/1password.asc \
-    | sudo gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/$(dpkg --print-architecture) stable main" \
+    | sudo gpg --dearmor --output /etc/apt/keyrings/1password-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/$(dpkg --print-architecture) stable main" \
     | sudo tee /etc/apt/sources.list.d/1password.list >/dev/null
+  # debsig-verify's policy/keyring dirs are fixed locations mandated by that
+  # tool, unrelated to the apt keyring convention above — left as-is.
   sudo mkdir -p /etc/debsig/policies/AC2D62742012EA22/
   curl -sS https://downloads.1password.com/linux/debian/debsig/1password.pol \
     | sudo tee /etc/debsig/policies/AC2D62742012EA22/1password.pol >/dev/null
@@ -164,6 +178,22 @@ if ! grep -q '1password/agent.sock' "$SSH_CONFIG"; then
   log "Configuring SSH to use the 1Password SSH agent"
   { printf 'Host *\n  IdentityAgent ~/.1password/agent.sock\n\n'; cat "$SSH_CONFIG"; } > "$SSH_CONFIG.tmp"
   mv "$SSH_CONFIG.tmp" "$SSH_CONFIG"
+fi
+
+# Optional one-time checkpoint: lets this same run pick up the real AWS SSO
+# config below instead of needing a second pass. Interactive only (never
+# blocks a piped/non-interactive run), and just pressing Enter skips it —
+# the AWS section still falls back to a placeholder either way.
+if [ -t 0 ] && ! op read "$OP_AWS_ITEM/start_url" &>/dev/null; then
+  cat <<'EOF'
+
+1Password isn't signed in yet (or CLI integration isn't on), so this run
+can't read your AWS SSO details from the vault yet. To fix that now:
+  1. Open 1Password, sign in (QR code from your phone is fastest).
+  2. Settings > Developer: turn on "Integrate with 1Password CLI" and
+     "Use the SSH Agent".
+EOF
+  read -rp "Press Enter once that's done (or right away to skip and fix ~/.aws/config later): " _
 fi
 
 # ---------------------------------------------------------------------------
@@ -293,12 +323,16 @@ fi
 # dotfiles
 # ---------------------------------------------------------------------------
 
-log "Deploying dotfiles"
-cp "$REPO_DIR/zsh/.zshrc" "$HOME/.zshrc"
-cp "$REPO_DIR/zsh/.p10k.zsh" "$HOME/.p10k.zsh"
+if [ -n "$REPO_DIR" ]; then
+  log "Deploying dotfiles"
+  cp "$REPO_DIR/zsh/.zshrc" "$HOME/.zshrc"
+  cp "$REPO_DIR/zsh/.p10k.zsh" "$HOME/.p10k.zsh"
 
-mkdir -p "$HOME/.config/ghostty"
-cp "$REPO_DIR/ghostty/config" "$HOME/.config/ghostty/config"
+  mkdir -p "$HOME/.config/ghostty"
+  cp "$REPO_DIR/ghostty/config" "$HOME/.config/ghostty/config"
+else
+  warn "No local checkout found (ran via curl | bash) — skipping dotfiles (.zshrc, .p10k.zsh, Ghostty config). Clone the repo and run ./install.sh directly to get these."
+fi
 
 # ---------------------------------------------------------------------------
 # default shell
@@ -327,10 +361,10 @@ fi
 # "AWS SSO" with fields "account_id", "role_name", "start_url" (see README).
 # ---------------------------------------------------------------------------
 
-OP_AWS_ITEM="op://Private/AWS SSO"
-
 mkdir -p "$HOME/.aws"
-if [ ! -f "$HOME/.aws/config" ]; then
+if [ ! -f "$HOME/.aws/config" ] && [ -z "$REPO_DIR" ]; then
+  warn "No local checkout found (ran via curl | bash) — skipping ~/.aws/config (its template lives in the repo). Clone the repo and run ./install.sh directly to get this."
+elif [ ! -f "$HOME/.aws/config" ]; then
   if command -v op &>/dev/null \
     && start_url=$(op read "$OP_AWS_ITEM/start_url" 2>/dev/null) \
     && account_id=$(op read "$OP_AWS_ITEM/account_id" 2>/dev/null) \
