@@ -33,7 +33,9 @@ failing.
 
 It finishes with a summary of what's actually on the machine — every package,
 symlink, group membership and 1Password check, marked `ok` or `MISS` — so a
-long run's output scrolling past doesn't hide a step that didn't land.
+long run's output scrolling past doesn't hide a step that didn't land. The
+closing list of manual steps is derived from those same checks, so a run that
+finds everything working says so instead of reciting a checklist.
 
 Re-running is safe, and is the intended fix for a half-finished first run. It
 skips anything already installed, adds you to the `docker` group if that
@@ -135,20 +137,20 @@ zsh/.p10k.zsh         ~/.p10k.zsh
 
 ## Tested
 
-Run start to finish on a pristine Ubuntu 26.04 LXD container: every package,
-snap and vendor installer lands, the interactive run answers both git identity
-prompts and the 1Password checkpoint, and it exits 0. A second run takes about
-five seconds and changes nothing — no re-downloaded fonts, no duplicated
-`Host *`, no backup files piling up. The `curl | bash` path skips the dotfiles
-with a warning instead of failing. Writing `~/.aws/config` from the vault, and
-repairing a placeholder one on a later run, were checked against a stub `op`.
+Run start to finish on a pristine Ubuntu 26.04 container and on a real
+machine. Every package, snap and vendor installer lands; the interactive run
+answers the git identity prompts and the 1Password checkpoint and exits 0; the
+summary comes back clean, including the live vault read and the SSH agent
+serving real keys. Docker's daemon comes up enabled and active. A second run
+takes about five seconds and changes nothing — no re-downloaded fonts, no
+duplicated `Host *`, no backups piling up. The `curl | bash` path skips the
+dotfiles with a warning instead of failing.
 
 ## Known gaps
 
-- Only tested in a container, not on real hardware or a VM. The Docker
-  *packages* install, but the daemon has never actually been started.
-- The 1Password paths are only proven against a stub `op`. The real vault
-  read, the SSH agent, and `op plugin init gh` all need a signed-in account
-  and haven't been exercised end to end on a fresh machine.
+- `op plugin init gh` still hasn't been run, so whether it offers an existing
+  vault credential or wants a new token is unknown.
+- The GUI apps are installed but never launched; nothing here checks that
+  Brave, Steam, Signal, Claude Desktop or VS Code actually start.
 - Installs only. `apt_install` uses `--no-upgrade`, so re-running never
   upgrades anything already present.

@@ -73,14 +73,28 @@ repo_suite() {
 # Never clobber a real file in $HOME without leaving the old one behind — this
 # script is meant to be re-run, and a re-run shouldn't silently eat local edits.
 backup_if_real_file() {
-  local target="$1"
+  local target="$1" incoming="${2:-}"
   if [ -e "$target" ] && [ ! -L "$target" ]; then
+    # Nothing to preserve if it's byte-identical to what's replacing it — that
+    # backup is pure clutter, and on a first install most of them are.
+    if [ -n "$incoming" ] && cmp -s "$target" "$incoming"; then
+      rm -f "$target"
+      return 0
+    fi
     local stamp
     stamp="$(date +%Y%m%d%H%M%S)"
     warn "Backing up existing $target -> $target.bak.$stamp"
     mv "$target" "$target.bak.$stamp"
   fi
 }
+
+# Apps installed by this particular run, so the closing notes can ask you to
+# sign in to those and stay quiet about ones that were already here.
+NEWLY_INSTALLED=()
+note_new() { NEWLY_INSTALLED+=("$1"); }
+
+# Set when this run changes something that only takes effect on next login.
+NEEDS_RELOGIN=""
 
 # 1Password vault item ~/.aws/config gets populated from — see README's
 # "1Password vault items" section.
@@ -218,6 +232,7 @@ if ! command -v signal-desktop &>/dev/null; then
   rm -f "$sig_key" "$sig_src"
   sudo apt-get update
   apt_install signal-desktop
+  note_new "Signal"
 fi
 
 # ---------------------------------------------------------------------------
@@ -232,6 +247,7 @@ if ! command -v claude-desktop &>/dev/null; then
     | sudo tee /etc/apt/sources.list.d/claude-desktop.list >/dev/null
   sudo apt-get update
   apt_install claude-desktop
+  note_new "Claude Desktop"
 fi
 
 # ---------------------------------------------------------------------------
@@ -304,7 +320,7 @@ fi
 if getent group docker >/dev/null && ! id -nG "$USER_NAME" | grep -w docker >/dev/null; then
   log "Adding $USER_NAME to the docker group"
   sudo usermod -aG docker "$USER_NAME"
-  warn "Log out and back in for docker group membership to take effect."
+  NEEDS_RELOGIN="docker group membership"
 fi
 
 # ---------------------------------------------------------------------------
@@ -328,6 +344,7 @@ install_snap() {
     else
       sudo snap install "$name"
     fi
+    note_new "$name"
   fi
 }
 
@@ -411,7 +428,7 @@ link_dotfile() {
   if [ -L "$dest" ] && [ "$(readlink -f "$dest")" = "$(readlink -f "$src")" ]; then
     return 0
   fi
-  backup_if_real_file "$dest"
+  backup_if_real_file "$dest" "$src"
   ln -sfn "$src" "$dest"
 }
 
@@ -473,6 +490,7 @@ fi
 if [ "$(getent passwd "$USER_NAME" | cut -d: -f7)" != "$(command -v zsh)" ]; then
   log "Setting zsh as default shell"
   sudo chsh -s "$(command -v zsh)" "$USER_NAME"
+  NEEDS_RELOGIN="${NEEDS_RELOGIN:+$NEEDS_RELOGIN and }the zsh login shell"
 fi
 
 # ---------------------------------------------------------------------------
@@ -611,29 +629,60 @@ if [ "$MISSING" -gt 0 ]; then
   warn "$MISSING item(s) above are missing. Most resolve by finishing the manual steps below and re-running ./install.sh."
 fi
 
-log "Done."
-cat <<'EOF'
+# ---------------------------------------------------------------------------
+# what's actually left to do
+#
+# Derived from the checks above rather than printed unconditionally: a run that
+# finds everything already working should say so and stop talking, not recite a
+# checklist it just proved you don't need.
+# ---------------------------------------------------------------------------
 
-Manual steps still needed:
-  - Sign in to 1Password — use "Sign in with QR code" if offered (scan with
-    your phone) instead of typing the master password + secret key. Then in
-    Settings > Developer turn on "Integrate with 1Password CLI" and
-    "Use the SSH Agent". This is the one real login the rest below rides on.
-  - Run `op plugin init gh` once to wire up `gh` via 1Password instead of
-    OAuth. The bundled ~/.zshrc already sources ~/.config/op/plugins.sh once
-    that file exists, so nothing to add by hand.
-  - If you haven't already, add your SSH key to a 1Password "SSH Key" vault
-    item (Import existing, or generate a new one) — the agent then serves
-    it over ~/.1password/agent.sock, no key file needed. Your existing
-    ~/.ssh/id_ed25519 was left untouched either way.
-  - Sign in: Brave sync, Steam, Signal (link device via QR), Claude Desktop,
-    VS Code.
-  - If ~/.aws/config still has <ACCOUNT_ID>/<SSO_ROLE_NAME>/<SSO_START_URL>
-    placeholders, sign in to 1Password and just re-run this script — it
-    detects a placeholder config and rewrites it with the real values.
-    Then `aws sso login --profile tp-site`.
-  - Log out and back in for the zsh default shell and docker group change
-    to take effect.
-  - Run `p10k configure` if you want to redo the prompt from scratch
-    instead of using the bundled ~/.p10k.zsh.
-EOF
+TODO=()
+todo() { TODO+=("$1"); }
+
+if ! op_read "$OP_AWS_ITEM/start_url" >/dev/null; then
+  todo "Sign in to 1Password — \"Sign in with QR code\" scanned from your phone beats typing the master password and secret key. Then Settings > Developer: turn on \"Integrate with 1Password CLI\" and \"Use the SSH Agent\"."
+fi
+
+if ! op_agent_has_keys >/dev/null 2>&1; then
+  todo "Add an SSH key to a 1Password \"SSH Key\" item (import an existing one, or let it generate one). The agent then serves it over ~/.1password/agent.sock and no key file is needed."
+fi
+
+if [ ! -f "$HOME/.config/op/plugins.sh" ]; then
+  todo "Run \`op plugin init gh\` to authenticate gh through 1Password instead of the OAuth device flow. ~/.zshrc already sources ~/.config/op/plugins.sh once it exists."
+fi
+
+if aws_config_needs_writing; then
+  # shellcheck disable=SC2088  # a literal path in a message, not a path to open
+  todo "~/.aws/config still has placeholders. Sign in to 1Password and re-run this script — it detects a placeholder config and rewrites it."
+elif ! compgen -G "$HOME/.aws/sso/cache/*.json" >/dev/null 2>&1; then
+  todo "Log in to AWS: aws sso login --profile tp-site"
+fi
+
+if [ "${#NEWLY_INSTALLED[@]}" -gt 0 ]; then
+  todo "Sign in to the apps this run installed: ${NEWLY_INSTALLED[*]}"
+fi
+
+if [ -n "$NEEDS_RELOGIN" ]; then
+  todo "Log out and back in, for $NEEDS_RELOGIN to take effect."
+fi
+
+if [ -d "$HOME/.nvm" ]; then
+  todo "Remove the leftover nvm install once you've confirmed node works: rm -rf ~/.nvm"
+fi
+
+if [ -L "$HOME/.zshrc" ] && [ "$SHELL" != "$(command -v zsh)" ]; then
+  todo "Start a new shell (exec zsh) to pick up the linked ~/.zshrc."
+fi
+
+log "Done."
+if [ "${#TODO[@]}" -eq 0 ]; then
+  echo
+  echo "Nothing left to do — everything checked above is set up."
+else
+  echo
+  echo "Manual steps still needed:"
+  for item in "${TODO[@]}"; do
+    printf '  - %s\n' "$item"
+  done
+fi
