@@ -104,7 +104,20 @@ fi
 mkdir -p "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
 
-sudo -v
+# `sudo -v` insists on a terminal to authenticate on, even for a user with
+# NOPASSWD — so it hard-fails anywhere there's no controlling tty (a
+# provisioning run, CI, `lxc exec`) and takes the whole script with it before
+# a single package is installed. Ask sudo whether it already has what it needs
+# before reaching for a prompt, and fail with a usable message if it can't.
+if ! sudo -n true 2>/dev/null; then
+  if [ -t 0 ]; then
+    sudo -v
+  else
+    echo "This script needs sudo, and there's no terminal to prompt for a password on." >&2
+    echo "Run it from a terminal, or give this user passwordless sudo." >&2
+    exit 1
+  fi
+fi
 
 # A full run takes longer than sudo's 15-minute timestamp (the snap downloads
 # alone are several GB), and the whole point of the layout below is that you can
