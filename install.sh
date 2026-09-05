@@ -362,7 +362,7 @@ Manual steps still needed:
   - If ~/.aws/config still has <ACCOUNT_ID>/<SSO_ROLE_NAME>/<SSO_START_URL>
     placeholders, either fill them in by hand, or create a 1Password item
     named "AWS SSO" with fields account_id/role_name/start_url and re-run
-    this script. Then `aws sso login --profile personal`.
+    this script. Then `aws sso login --profile tp-site`.
   - Log out and back in for the zsh default shell and docker group change
     to take effect.
   - Run `p10k configure` if you want to redo the prompt from scratch

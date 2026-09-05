@@ -85,5 +85,5 @@ machines, set these up once in your 1Password vault:
   of OAuth device flow.
 - Sign in: Brave sync, Steam, Signal (link device), Claude Desktop, VS Code.
 - Fill in `~/.aws/config` (by hand, or via the 1Password item above), then
-  `aws sso login --profile personal`.
+  `aws sso login --profile tp-site`.
 - Log out/in for the default shell and `docker` group changes to apply.

@@ -1,10 +1,10 @@
-[profile personal]
-sso_session = personal
+[profile tp-site]
+sso_session = tp-site
 sso_account_id = <ACCOUNT_ID>
 sso_role_name = <SSO_ROLE_NAME>
 region = us-east-1
 
-[sso-session personal]
+[sso-session tp-site]
 sso_start_url = <SSO_START_URL>
 sso_region = us-east-1
 sso_registration_scopes = sso:account:access
