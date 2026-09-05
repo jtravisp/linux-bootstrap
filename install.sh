@@ -129,6 +129,44 @@ if ! command -v claude-desktop &>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
+# 1Password + 1Password CLI (official repo — support.1password.com/install-linux,
+# developer.1password.com/docs/cli/get-started)
+#
+# Installed via apt, NOT snap: the 1Password SSH agent does not work with the
+# Snap Store build.
+# ---------------------------------------------------------------------------
+
+if ! apt_pkg_installed 1password || ! apt_pkg_installed 1password-cli; then
+  log "Installing 1Password + 1Password CLI"
+  curl -sS https://downloads.1password.com/linux/keys/1password.asc \
+    | sudo gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/$(dpkg --print-architecture) stable main" \
+    | sudo tee /etc/apt/sources.list.d/1password.list >/dev/null
+  sudo mkdir -p /etc/debsig/policies/AC2D62742012EA22/
+  curl -sS https://downloads.1password.com/linux/debian/debsig/1password.pol \
+    | sudo tee /etc/debsig/policies/AC2D62742012EA22/1password.pol >/dev/null
+  sudo mkdir -p /usr/share/debsig/keyrings/AC2D62742012EA22
+  curl -sS https://downloads.1password.com/linux/keys/1password.asc \
+    | sudo gpg --dearmor --output /usr/share/debsig/keyrings/AC2D62742012EA22/debsig.gpg
+  sudo apt-get update
+  apt_install 1password 1password-cli
+fi
+
+# 1Password SSH agent: point ssh at its socket. Requires the desktop app's
+# Settings > Developer > "Use the SSH Agent" to be turned on (manual, one-time).
+SSH_DIR="$HOME/.ssh"
+SSH_CONFIG="$SSH_DIR/config"
+mkdir -p "$SSH_DIR"
+chmod 700 "$SSH_DIR"
+touch "$SSH_CONFIG"
+chmod 600 "$SSH_CONFIG"
+if ! grep -q '1password/agent.sock' "$SSH_CONFIG"; then
+  log "Configuring SSH to use the 1Password SSH agent"
+  { printf 'Host *\n  IdentityAgent ~/.1password/agent.sock\n\n'; cat "$SSH_CONFIG"; } > "$SSH_CONFIG.tmp"
+  mv "$SSH_CONFIG.tmp" "$SSH_CONFIG"
+fi
+
+# ---------------------------------------------------------------------------
 # Docker (official repo — docs.docker.com/engine/install/ubuntu)
 # ---------------------------------------------------------------------------
 
@@ -171,7 +209,6 @@ install_snap() {
 
 install_snap brave
 install_snap steam
-install_snap 1password
 install_snap code classic
 install_snap kubectl classic
 
@@ -279,13 +316,26 @@ if [ -t 0 ] && [ -z "$(git config --global user.name || true)" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# AWS SSO config (placeholder — fill in your real values afterward)
+# AWS SSO config — pulled from a 1Password item if available, otherwise a
+# placeholder template you fill in by hand. Expects a vault item named
+# "AWS SSO" with fields "account_id", "role_name", "start_url" (see README).
 # ---------------------------------------------------------------------------
+
+OP_AWS_ITEM="op://Private/AWS SSO"
 
 mkdir -p "$HOME/.aws"
 if [ ! -f "$HOME/.aws/config" ]; then
-  log "Writing placeholder AWS SSO config (edit ~/.aws/config with your real values)"
-  cp "$REPO_DIR/aws/config.template" "$HOME/.aws/config"
+  if command -v op &>/dev/null && op read "$OP_AWS_ITEM/start_url" &>/dev/null; then
+    log "Populating ~/.aws/config from 1Password"
+    start_url=$(op read "$OP_AWS_ITEM/start_url")
+    account_id=$(op read "$OP_AWS_ITEM/account_id")
+    role_name=$(op read "$OP_AWS_ITEM/role_name")
+    sed -e "s|<SSO_START_URL>|$start_url|" -e "s|<ACCOUNT_ID>|$account_id|" -e "s|<SSO_ROLE_NAME>|$role_name|" \
+      "$REPO_DIR/aws/config.template" > "$HOME/.aws/config"
+  else
+    log "Writing placeholder AWS SSO config (no 1Password item found — edit ~/.aws/config by hand, or set up the vault item, see README)"
+    cp "$REPO_DIR/aws/config.template" "$HOME/.aws/config"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -296,12 +346,23 @@ log "Done."
 cat <<'EOF'
 
 Manual steps still needed:
-  - Sign in: Brave sync, Steam, 1Password, Signal (link device via QR),
-    Claude Desktop, VS Code, GitHub CLI (gh auth login).
-  - Edit ~/.aws/config with your real SSO account ID / start URL, then
-    run `aws sso login --profile <name>`.
-  - SSH keys were intentionally not touched — restore/generate yours
-    separately.
+  - Sign in to 1Password (master password + secret key), then in
+    Settings > Developer turn on "Integrate with 1Password CLI" and
+    "Use the SSH Agent". This is the one real login the rest below rides on.
+  - Run `op plugin init gh` once to wire up `gh` via 1Password instead of
+    OAuth (first machine ever: paste a GitHub token to store; every machine
+    after: it just finds it). Add `source ~/.config/op/plugins.sh` to
+    ~/.zshrc if the plugin setup doesn't do it for you.
+  - If you haven't already, add your SSH key to a 1Password "SSH Key" vault
+    item (Import existing, or generate a new one) — the agent then serves
+    it over ~/.1password/agent.sock, no key file needed. Your existing
+    ~/.ssh/id_ed25519 was left untouched either way.
+  - Sign in: Brave sync, Steam, Signal (link device via QR), Claude Desktop,
+    VS Code.
+  - If ~/.aws/config still has <ACCOUNT_ID>/<SSO_ROLE_NAME>/<SSO_START_URL>
+    placeholders, either fill them in by hand, or create a 1Password item
+    named "AWS SSO" with fields account_id/role_name/start_url and re-run
+    this script. Then `aws sso login --profile personal`.
   - Log out and back in for the zsh default shell and docker group change
     to take effect.
   - Run `p10k configure` if you want to redo the prompt from scratch
