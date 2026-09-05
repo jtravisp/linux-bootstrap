@@ -213,16 +213,22 @@ install_snap code classic
 install_snap kubectl classic
 
 # ---------------------------------------------------------------------------
-# AWS CLI v2 (official installer — installed under ~/.local, no sudo)
+# AWS CLI v2 (official installer — defaults to a user-local ~/.local install,
+# no sudo)
 # ---------------------------------------------------------------------------
 
 if ! command -v aws &>/dev/null; then
   log "Installing AWS CLI v2"
-  tmp="$(mktemp -d)"
-  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o "$tmp/awscliv2.zip"
-  unzip -q "$tmp/awscliv2.zip" -d "$tmp"
-  "$tmp/aws/install" --install-dir "$HOME/.local/share/aws-cli" --bin-dir "$HOME/.local/bin"
-  rm -rf "$tmp"
+  curl -fsSL https://awscli.amazonaws.com/v2/install.sh | bash
+fi
+
+# ---------------------------------------------------------------------------
+# uv (Python package/venv manager — official installer, installs to ~/.local/bin)
+# ---------------------------------------------------------------------------
+
+if ! command -v uv &>/dev/null; then
+  log "Installing uv"
+  curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 
 # ---------------------------------------------------------------------------
