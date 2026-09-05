@@ -37,6 +37,44 @@ is_ubuntu_or_debian() {
   [ -f /etc/os-release ] && grep -qiE '^ID(_LIKE)?=.*(debian|ubuntu)' /etc/os-release
 }
 
+# `whoami` under `set -u`: $USER isn't guaranteed to be exported (it isn't under
+# `sudo -u`, `env -i`, or a systemd unit), and an unset $USER would be a hard
+# crash rather than a fallback.
+USER_NAME="$(id -un)"
+
+# Third-party apt repos lag new Ubuntu releases by weeks — bootstrapping a
+# brand new machine is exactly when a distro is newest, so this is the most
+# likely way the script breaks. Probe the running release's codename against
+# the repo and fall back to the newest suite the repo actually publishes,
+# rather than adding a source that 404s and takes `apt-get update` down with
+# it. Order is newest-first; the current codename is tried before any of them.
+repo_suite() {
+  local base_url="$1" codename fallback
+  codename="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")"
+  for fallback in "$codename" resolute questing plucky noble jammy; do
+    if curl -fsS -o /dev/null "$base_url/dists/$fallback/Release" 2>/dev/null; then
+      [ "$fallback" = "$codename" ] || \
+        warn "This repo has no '$codename' suite yet; using '$fallback' instead." >&2
+      echo "$fallback"
+      return 0
+    fi
+  done
+  warn "Could not find a usable suite at $base_url; falling back to '$codename'." >&2
+  echo "$codename"
+}
+
+# Never clobber a real file in $HOME without leaving the old one behind — this
+# script is meant to be re-run, and a re-run shouldn't silently eat local edits.
+backup_if_real_file() {
+  local target="$1"
+  if [ -e "$target" ] && [ ! -L "$target" ]; then
+    local stamp
+    stamp="$(date +%Y%m%d%H%M%S)"
+    warn "Backing up existing $target -> $target.bak.$stamp"
+    mv "$target" "$target.bak.$stamp"
+  fi
+}
+
 # 1Password vault item ~/.aws/config gets populated from — see README's
 # "1Password vault items" section.
 OP_AWS_ITEM="op://Private/AWS SSO"
@@ -67,7 +105,8 @@ sudo apt-get update
 log "Installing base packages"
 apt_install \
   curl wget gnupg ca-certificates \
-  git zsh unzip jq ripgrep tmux fzf fd-find neovim
+  git zsh unzip jq ripgrep tmux fzf fd-find neovim \
+  fontconfig
 
 # fd-find installs the binary as `fdfind`; symlink it to `fd`.
 mkdir -p "$HOME/.local/bin"
@@ -103,7 +142,7 @@ if ! command -v terraform &>/dev/null; then
   log "Installing Terraform"
   sudo mkdir -p -m 755 /etc/apt/keyrings
   wget -O - https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/hashicorp-archive-keyring.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(. /etc/os-release && echo "$VERSION_CODENAME") main" \
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(repo_suite https://apt.releases.hashicorp.com) main" \
     | sudo tee /etc/apt/sources.list.d/hashicorp.list >/dev/null
   sudo apt-get update
   apt_install terraform
@@ -116,11 +155,19 @@ fi
 if ! command -v signal-desktop &>/dev/null; then
   log "Installing Signal Desktop"
   sudo mkdir -p -m 755 /etc/apt/keyrings
-  curl -fsSL https://updates.signal.org/desktop/apt/keys.asc | gpg --dearmor > /tmp/signal-desktop-keyring.gpg
-  sudo cp /tmp/signal-desktop-keyring.gpg /etc/apt/keyrings/signal-desktop-keyring.gpg
-  curl -fsSL -o /tmp/signal-desktop.sources https://updates.signal.org/static/desktop/apt/signal-desktop.sources
-  sudo sed -i 's|/usr/share/keyrings/|/etc/apt/keyrings/|' /tmp/signal-desktop.sources
-  sudo cp /tmp/signal-desktop.sources /etc/apt/sources.list.d/signal-desktop.sources
+  # mktemp, not fixed /tmp names: these get copied into system dirs as root,
+  # and a predictable path in a world-writable dir is a symlink attack waiting
+  # to happen on a shared machine.
+  sig_key=$(mktemp); sig_src=$(mktemp)
+  curl -fsSL https://updates.signal.org/desktop/apt/keys.asc | gpg --dearmor > "$sig_key"
+  sudo cp "$sig_key" /etc/apt/keyrings/signal-desktop-keyring.gpg
+  sudo chmod go+r /etc/apt/keyrings/signal-desktop-keyring.gpg
+  curl -fsSL -o "$sig_src" https://updates.signal.org/static/desktop/apt/signal-desktop.sources
+  # Signal's own .sources points at /usr/share/keyrings/; rewrite it to match
+  # where this script actually puts locally-managed keys.
+  sed -i 's|/usr/share/keyrings/|/etc/apt/keyrings/|' "$sig_src"
+  sudo cp "$sig_src" /etc/apt/sources.list.d/signal-desktop.sources
+  rm -f "$sig_key" "$sig_src"
   sudo apt-get update
   apt_install signal-desktop
 fi
@@ -176,24 +223,10 @@ touch "$SSH_CONFIG"
 chmod 600 "$SSH_CONFIG"
 if ! grep -q '1password/agent.sock' "$SSH_CONFIG"; then
   log "Configuring SSH to use the 1Password SSH agent"
-  { printf 'Host *\n  IdentityAgent ~/.1password/agent.sock\n\n'; cat "$SSH_CONFIG"; } > "$SSH_CONFIG.tmp"
-  mv "$SSH_CONFIG.tmp" "$SSH_CONFIG"
-fi
-
-# Optional one-time checkpoint: lets this same run pick up the real AWS SSO
-# config below instead of needing a second pass. Interactive only (never
-# blocks a piped/non-interactive run), and just pressing Enter skips it —
-# the AWS section still falls back to a placeholder either way.
-if [ -t 0 ] && ! op read "$OP_AWS_ITEM/start_url" &>/dev/null; then
-  cat <<'EOF'
-
-1Password isn't signed in yet (or CLI integration isn't on), so this run
-can't read your AWS SSO details from the vault yet. To fix that now:
-  1. Open 1Password, sign in (QR code from your phone is fastest).
-  2. Settings > Developer: turn on "Integrate with 1Password CLI" and
-     "Use the SSH Agent".
-EOF
-  read -rp "Press Enter once that's done (or right away to skip and fix ~/.aws/config later): " _
+  # Appended, not prepended: ssh takes the FIRST value it obtains for each
+  # keyword, so a `Host *` block at the top of the file would silently win over
+  # every per-host IdentityAgent/IdentityFile added later. `Host *` belongs last.
+  printf '\nHost *\n  IdentityAgent ~/.1password/agent.sock\n' >> "$SSH_CONFIG"
 fi
 
 # ---------------------------------------------------------------------------
@@ -208,15 +241,22 @@ if ! command -v docker &>/dev/null; then
   sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
 Types: deb
 URIs: https://download.docker.com/linux/ubuntu
-Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Suites: $(repo_suite https://download.docker.com/linux/ubuntu)
 Components: stable
 Architectures: $(dpkg --print-architecture)
 Signed-By: /etc/apt/keyrings/docker.asc
 EOF
   sudo apt-get update
   apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-  sudo usermod -aG docker "$USER"
-  warn "Added $USER to the docker group — log out and back in for it to take effect."
+fi
+
+# Outside the install guard on purpose: if docker was already present but this
+# user isn't in the group yet (installed by other means, or a previous run that
+# died before this point), a re-run should still fix it.
+if getent group docker >/dev/null && ! id -nG "$USER_NAME" | grep -qw docker; then
+  log "Adding $USER_NAME to the docker group"
+  sudo usermod -aG docker "$USER_NAME"
+  warn "Log out and back in for docker group membership to take effect."
 fi
 
 # ---------------------------------------------------------------------------
@@ -323,13 +363,25 @@ fi
 # dotfiles
 # ---------------------------------------------------------------------------
 
+# Symlinked, not copied: the checkout is the source of truth, so a tweak made
+# on the machine shows up as a diff in this repo instead of quietly drifting
+# away from it. Any pre-existing real file is moved aside first, never eaten.
+link_dotfile() {
+  local src="$1" dest="$2"
+  if [ -L "$dest" ] && [ "$(readlink -f "$dest")" = "$(readlink -f "$src")" ]; then
+    return 0
+  fi
+  backup_if_real_file "$dest"
+  ln -sfn "$src" "$dest"
+}
+
 if [ -n "$REPO_DIR" ]; then
-  log "Deploying dotfiles"
-  cp "$REPO_DIR/zsh/.zshrc" "$HOME/.zshrc"
-  cp "$REPO_DIR/zsh/.p10k.zsh" "$HOME/.p10k.zsh"
+  log "Linking dotfiles from $REPO_DIR"
+  link_dotfile "$REPO_DIR/zsh/.zshrc"      "$HOME/.zshrc"
+  link_dotfile "$REPO_DIR/zsh/.p10k.zsh"   "$HOME/.p10k.zsh"
 
   mkdir -p "$HOME/.config/ghostty"
-  cp "$REPO_DIR/ghostty/config" "$HOME/.config/ghostty/config"
+  link_dotfile "$REPO_DIR/ghostty/config"  "$HOME/.config/ghostty/config"
 else
   warn "No local checkout found (ran via curl | bash) — skipping dotfiles (.zshrc, .p10k.zsh, Ghostty config). Clone the repo and run ./install.sh directly to get these."
 fi
@@ -338,9 +390,9 @@ fi
 # default shell
 # ---------------------------------------------------------------------------
 
-if [ "$(getent passwd "$USER" | cut -d: -f7)" != "$(command -v zsh)" ]; then
+if [ "$(getent passwd "$USER_NAME" | cut -d: -f7)" != "$(command -v zsh)" ]; then
   log "Setting zsh as default shell"
-  sudo chsh -s "$(command -v zsh)" "$USER"
+  sudo chsh -s "$(command -v zsh)" "$USER_NAME"
 fi
 
 # ---------------------------------------------------------------------------
@@ -362,20 +414,48 @@ fi
 # ---------------------------------------------------------------------------
 
 mkdir -p "$HOME/.aws"
-if [ ! -f "$HOME/.aws/config" ] && [ -z "$REPO_DIR" ]; then
+
+# A config that still has <PLACEHOLDERS> in it is not a real config — treat it
+# as absent so a later run (once 1Password is signed in) can fill it in. Only a
+# config with real values is left alone; hand-edited ones are never clobbered.
+aws_config_needs_writing() {
+  [ ! -f "$HOME/.aws/config" ] || grep -q '<ACCOUNT_ID>\|<SSO_ROLE_NAME>\|<SSO_START_URL>' "$HOME/.aws/config"
+}
+
+# Everything above this point is unattended, so the one step that needs a human
+# waits until here: start the script, walk away, and the only thing still
+# wanting you is this prompt. Interactive runs only — it never blocks a piped
+# run — and pressing Enter straight away just falls through to the placeholder.
+if aws_config_needs_writing && [ -t 0 ] && ! op read "$OP_AWS_ITEM/start_url" &>/dev/null; then
+  cat <<'EOF'
+
+1Password isn't signed in yet (or CLI integration isn't on), so this run
+can't read your AWS SSO details from the vault yet. To fix that now:
+  1. Open 1Password, sign in (QR code from your phone is fastest).
+  2. Settings > Developer: turn on "Integrate with 1Password CLI" and
+     "Use the SSH Agent".
+EOF
+  read -rp "Press Enter once that's done (or right away to skip and fix ~/.aws/config later): " _
+fi
+
+if ! aws_config_needs_writing; then
+  : # already has real values — leave it alone
+elif [ -z "$REPO_DIR" ]; then
   warn "No local checkout found (ran via curl | bash) — skipping ~/.aws/config (its template lives in the repo). Clone the repo and run ./install.sh directly to get this."
+elif command -v op &>/dev/null \
+  && start_url=$(op read "$OP_AWS_ITEM/start_url" 2>/dev/null) \
+  && account_id=$(op read "$OP_AWS_ITEM/account_id" 2>/dev/null) \
+  && role_name=$(op read "$OP_AWS_ITEM/role_name" 2>/dev/null); then
+  log "Populating ~/.aws/config from 1Password"
+  backup_if_real_file "$HOME/.aws/config"
+  sed -e "s|<SSO_START_URL>|$start_url|" -e "s|<ACCOUNT_ID>|$account_id|" -e "s|<SSO_ROLE_NAME>|$role_name|" \
+    "$REPO_DIR/aws/config.template" > "$HOME/.aws/config"
 elif [ ! -f "$HOME/.aws/config" ]; then
-  if command -v op &>/dev/null \
-    && start_url=$(op read "$OP_AWS_ITEM/start_url" 2>/dev/null) \
-    && account_id=$(op read "$OP_AWS_ITEM/account_id" 2>/dev/null) \
-    && role_name=$(op read "$OP_AWS_ITEM/role_name" 2>/dev/null); then
-    log "Populating ~/.aws/config from 1Password"
-    sed -e "s|<SSO_START_URL>|$start_url|" -e "s|<ACCOUNT_ID>|$account_id|" -e "s|<SSO_ROLE_NAME>|$role_name|" \
-      "$REPO_DIR/aws/config.template" > "$HOME/.aws/config"
-  else
-    log "Writing placeholder AWS SSO config (no 1Password item found — edit ~/.aws/config by hand, or set up the vault item, see README)"
-    cp "$REPO_DIR/aws/config.template" "$HOME/.aws/config"
-  fi
+  log "Writing placeholder AWS SSO config (1Password not readable — edit ~/.aws/config by hand, or sign in and re-run this script)"
+  cp "$REPO_DIR/aws/config.template" "$HOME/.aws/config"
+else
+  # shellcheck disable=SC2088  # literal path in a user-facing message
+  warn "~/.aws/config still has placeholders and 1Password isn't readable — sign in to 1Password and re-run to fill it in."
 fi
 
 # ---------------------------------------------------------------------------
@@ -391,8 +471,8 @@ Manual steps still needed:
     Settings > Developer turn on "Integrate with 1Password CLI" and
     "Use the SSH Agent". This is the one real login the rest below rides on.
   - Run `op plugin init gh` once to wire up `gh` via 1Password instead of
-    OAuth. Add `source ~/.config/op/plugins.sh` to ~/.zshrc if the plugin
-    setup doesn't do it for you.
+    OAuth. The bundled ~/.zshrc already sources ~/.config/op/plugins.sh once
+    that file exists, so nothing to add by hand.
   - If you haven't already, add your SSH key to a 1Password "SSH Key" vault
     item (Import existing, or generate a new one) — the agent then serves
     it over ~/.1password/agent.sock, no key file needed. Your existing
@@ -400,9 +480,9 @@ Manual steps still needed:
   - Sign in: Brave sync, Steam, Signal (link device via QR), Claude Desktop,
     VS Code.
   - If ~/.aws/config still has <ACCOUNT_ID>/<SSO_ROLE_NAME>/<SSO_START_URL>
-    placeholders, either fill them in by hand, or create a 1Password item
-    named "AWS SSO" with fields account_id/role_name/start_url and re-run
-    this script. Then `aws sso login --profile tp-site`.
+    placeholders, sign in to 1Password and just re-run this script — it
+    detects a placeholder config and rewrites it with the real values.
+    Then `aws sso login --profile tp-site`.
   - Log out and back in for the zsh default shell and docker group change
     to take effect.
   - Run `p10k configure` if you want to redo the prompt from scratch

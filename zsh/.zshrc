@@ -10,25 +10,9 @@ export ZSH="$HOME/.oh-my-zsh"
 
 ZSH_THEME="powerlevel10k/powerlevel10k"
 
-POWERLEVEL9K_PROMPT_ON_NEWLINE=true
-# Add a space in the first prompt
-POWERLEVEL9K_MULTILINE_FIRST_PROMPT_PREFIX="%f"
-# Visual customisation of the second prompt line
-local user_symbol="$"
-if [[ $(print -P "%#") =~ "#" ]]; then
-    user_symbol = "#"
-fi
-POWERLEVEL9K_RIGHT_PROMPT_ELEMENTS=(status virtualenv)
-POWERLEVEL9K_MODE='nerdfont-complete'
-POWERLEVEL9K_MULTILINE_LAST_PROMPT_PREFIX="%{%B%F{black}%K{yellow}%} $user_symbol%{%b%f%k%F{yellow}%} %{%f%}"
-POWERLEVEL9K_PROMPT_ADD_NEWLINE=true
-POWERLEVEL9K_VCS_CLEAN_FOREGROUND='blue'
-POWERLEVEL9K_VCS_CLEAN_BACKGROUND='black'
-POWERLEVEL9K_VCS_UNTRACKED_FOREGROUND='yellow'
-POWERLEVEL9K_VCS_UNTRACKED_BACKGROUND='black'
-POWERLEVEL9K_VCS_MODIFIED_FOREGROUND='yellow'
-POWERLEVEL9K_VCS_MODIFIED_BACKGROUND='black'
-POWERLEVEL9K_VI_MODE_INSERT_FOREGROUND='teal'
+# Prompt appearance lives entirely in ~/.p10k.zsh (sourced at the bottom of this
+# file), which begins by unsetting every POWERLEVEL9K_* variable. Setting them
+# here has no effect — edit ~/.p10k.zsh or re-run `p10k configure` instead.
 
 # Which plugins would you like to load?
 # zsh-syntax-highlighting must stay last in this list.
@@ -43,6 +27,17 @@ export PATH="$HOME/.local/bin:$PATH"
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+
+# fzf key bindings (Ctrl-R history search, Ctrl-T file search). Debian/Ubuntu's
+# fzf package ships these separately rather than wiring them up on install.
+[ -f /usr/share/doc/fzf/examples/key-bindings.zsh ] && \
+  source /usr/share/doc/fzf/examples/key-bindings.zsh
+[ -f /usr/share/doc/fzf/examples/completion.zsh ] && \
+  source /usr/share/doc/fzf/examples/completion.zsh
+
+# 1Password shell plugins (`op plugin init gh` etc.) — this file only exists
+# once at least one plugin has been set up.
+[ -f ~/.config/op/plugins.sh ] && source ~/.config/op/plugins.sh
 
 # To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
 [[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
